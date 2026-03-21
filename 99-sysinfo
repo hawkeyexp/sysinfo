@@ -4,7 +4,7 @@
 LOCAL_SCRIPT="/etc/update-motd.d/99-sysinfo"
 REMOTE_URL="https://raw.githubusercontent.com/hawkeyexp/sysinfo/main/99-sysinfo"
 
- --- Internet- & Update-Prüfung ---
+# --- Internet- & Update-Prüfung ---
 if command -v curl &> /dev/null; then
     if timeout 1 bash -c "true > /dev/tcp/8.8.8.8/53" 2>/dev/null; then
         REMOTE_CONTENT=$(curl -sL --connect-timeout 2 --max-time 5 "$REMOTE_URL")
