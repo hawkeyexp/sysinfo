@@ -1,0 +1,229 @@
+#!/bin/bash
+
+# --- Pfade für Auto-Update ---
+LOCAL_SCRIPT="/etc/update-motd.d/99-sysinfo"
+REMOTE_URL="https://raw.githubusercontent.com/hawkeyexp/sysinfo/main/99-sysinfo"
+
+ --- Internet- & Update-Prüfung ---
+if command -v curl &> /dev/null; then
+    if timeout 1 bash -c "true > /dev/tcp/8.8.8.8/53" 2>/dev/null; then
+        REMOTE_CONTENT=$(curl -sL --connect-timeout 2 --max-time 5 "$REMOTE_URL")
+        if [ -n "$REMOTE_CONTENT" ] && echo "$REMOTE_CONTENT" | grep -q "#!/bin/bash"; then
+            REMOTE_HASH=$(echo "$REMOTE_CONTENT" | md5sum | awk '{print $1}')
+            LOCAL_HASH=$(md5sum "$LOCAL_SCRIPT" | awk '{print $1}')
+            if [ "$REMOTE_HASH" != "$LOCAL_HASH" ]; then
+                echo -e "\e[0;33mUpdate gefunden! Aktualisiere sysinfo...\e[0m"
+                echo "$REMOTE_CONTENT" | sudo tee "$LOCAL_SCRIPT" > /dev/null
+                sudo chmod +x "$LOCAL_SCRIPT"
+                exec "$LOCAL_SCRIPT"
+            fi
+        fi
+    fi
+fi
+
+export TERM=xterm-256color
+clear
+
+# --- Konfiguration & Farben ---
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+RED='\033[0;31m'
+PINK='\033[0;35m'
+LIGHT_RED='\033[1;31m'
+WHITE='\033[1;37m'
+NC='\033[0m'
+BOLD='\033[1m'
+
+# --- Basis-Informationen ---
+KERNEL=$(uname -r)
+DEBIAN_VER=$(cat /etc/debian_version 2>/dev/null || echo "Unbekannt")
+HOSTNAME=$(hostname | tr 'a-z' 'A-Z')
+IP_ADDR=$(hostname -I | awk '{print $1}')
+UPTIME=$(uptime -p | sed 's/up //;s/,//g;s/ years\?/y/;s/ weeks\?/w/;s/ days\?/d/;s/ hours\?/h/;s/ minutes\?/m/')
+LOAD=$(cut -d ' ' -f1-3 /proc/loadavg)
+[ -f /var/run/reboot-required ] && REBOOT_STATUS="${RED}Erforderlich${NC}" || REBOOT_STATUS="${GREEN}Nein${NC}"
+
+# --- CPU Kerne (Intel/AMD/ARM) ---
+CPU_CORES_PHYS=$(lscpu -p | grep -v '^#' | sort -u -t, -k2,2 | wc -l)
+CPU_THREADS=$(nproc)
+CPU_CORE_INFO="${CPU_CORES_PHYS} Core(s) / ${CPU_THREADS} Thread(s)"
+
+# --- Hardware Infos ---
+if [ -f /proc/device-tree/model ]; then
+    HW_MODEL=$(tr -d '\0' < /proc/device-tree/model)
+elif [ -f /sys/class/dmi/id/product_name ]; then
+    HW_MODEL=$(cat /sys/class/dmi/id/product_name)
+else
+    HW_MODEL="Unbekannt / VM"
+fi
+
+CPU_MODEL=$(lscpu | grep -E "Modellname|Model name" | cut -d ':' -f 2 | xargs)
+[ ${#CPU_MODEL} -gt 30 ] && CPU_MODEL="${CPU_MODEL:0:27}..."
+
+# --- CPU Takt (Intel/AMD/Pi) ---
+if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq ]; then
+    CPU_FREQ_KHZ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq)
+    CPU_FREQ="$((CPU_FREQ_KHZ / 1000)) MHz"
+elif command -v vcgencmd &> /dev/null; then
+    CPU_FREQ=$(vcgencmd measure_clock arm | awk -F= '{printf "%.0f MHz", $2 / 1000000}')
+else
+    CPU_FREQ=$(lscpu | grep "CPU MHz" | awk '{printf "%.0f MHz", $3}')
+fi
+
+# --- CPU Temperatur (Universal) ---
+CPU_TEMP="N/A"
+for zone in /sys/class/thermal/thermal_zone*; do
+    if [ -f "$zone/type" ] && grep -qE "cpu|package|acpitz|x86_pkg_temp" "$zone/type"; then
+        TEMP_RAW=$(cat "$zone/temp" 2>/dev/null)
+        if [ -n "$TEMP_RAW" ]; then
+            CPU_TEMP="$((TEMP_RAW / 1000))°C"
+            break
+        fi
+    fi
+done
+if [ "$CPU_TEMP" = "N/A" ] && command -v sensors &> /dev/null; then
+    CPU_TEMP=$(sensors 2>/dev/null | grep -m 1 -E 'Tctl:|Tdie:|Package id 0:|Composite:' | awk '{print $2}' | tr -d '+')
+fi
+
+# --- GPU Temperatur & Pi-Spezifisches ---
+GPU_TEMP="N/A"
+RPI_VOLT_STATUS=""
+RPI_CODECS=""
+if command -v vcgencmd &> /dev/null; then
+    GPU_TEMP=$(vcgencmd measure_temp | cut -d'=' -f2)
+    THROTTLED=$(vcgencmd get_throttled | cut -d'=' -f2)
+    if [ "$THROTTLED" != "0x0" ]; then
+        (( ($THROTTLED & 0x1) || ($THROTTLED & 0x10000) )) && RPI_VOLT_STATUS="${RED}KRITISCH (Spannung)${NC}" || RPI_VOLT_STATUS="${YELLOW}Warnung (Spannung)${NC}"
+    else
+        RPI_VOLT_STATUS="${GREEN}OK${NC}"
+    fi
+    for codec in H264 MPG2 WVC1; do
+        STATUS=$(vcgencmd codec_enabled $codec | cut -d'=' -f2)
+        [ "$STATUS" = "enabled" ] && RPI_CODECS="${RPI_CODECS}${GREEN}${codec}${NC} " || RPI_CODECS="${RPI_CODECS}${RED}${codec}${NC} "
+    done
+fi
+
+# --- Dienste-Prüfung ---
+SERVICES_FOUND=()
+check_service() {
+    local name=$1
+    local service=$2
+    if systemctl list-units --all --type=service | grep -Fq "${service}.service"; then
+        if systemctl is-active --quiet "$service"; then
+            SERVICES_FOUND+=("${name}: ${GREEN}Aktiv${NC}")
+        else
+            SERVICES_FOUND+=("${name}: ${RED}Inaktiv${NC}")
+        fi
+    fi
+}
+
+check_service "Nginx" "nginx"
+check_service "Lighttpd" "lighttpd"
+check_service "MariaDB" "mariadb"
+check_service "Samba" "smbd"
+check_service "ProFTP" "proftpd"
+check_service "DHCP" "isc-dhcp-server"
+check_service "Postfix" "postfix"
+check_service "Dovecot" "dovecot"
+check_service "UniFi" "unifi"
+check_service "UOS-Server" "uosserver"
+check_service "MongoDB" "mongodb"
+check_service "Klipper" "klipper"
+check_service "Moonraker" "moonraker"
+check_service "Crowsnest" "crowsnest"
+check_service "KlipperScreen" "KlipperScreen"
+check_service "PiHole" "pihole-FTL"
+check_service "SSH" "ssh"
+check_service "Spoolman" "Spoolman"
+check_service "Fhem" "fhem"
+
+# --- RAM, User & Mail ---
+RAM_INFO=$(free -h | awk 'NR==2 {print $3 " / " $2}')
+RAW_USER_LIST=$(users | tr ' ' '\n' | sort -u)
+USER_LIST_DISPLAY=$(echo "$RAW_USER_LIST" | paste -sd ", " -)
+USER_COUNT=$(echo "$RAW_USER_LIST" | wc -l)
+MAIL_STATUS_STRING=""
+for u in $RAW_USER_LIST; do
+    MBOX="/var/mail/$u"
+    if [ -f "$MBOX" ]; then
+        CNT=$(grep -c "^From " "$MBOX" 2>/dev/null || sudo grep -c "^From " "$MBOX" 2>/dev/null)
+        MAIL_STATUS_STRING="${MAIL_STATUS_STRING}${u}: ${CNT:-0}, "
+    else
+        MAIL_STATUS_STRING="${MAIL_STATUS_STRING}${u}: 0, "
+    fi
+done
+MAIL_STATUS_STRING=${MAIL_STATUS_STRING%, }
+
+# --- RAID Logik ---
+RAID_CONTENT=" Keine aktiven RAID-Verbünde gefunden"
+if [ -f /proc/mdstat ] && grep -q "md" /proc/mdstat; then
+    RAID_CONTENT=""
+    for md in $(grep "^md" /proc/mdstat | cut -d' ' -f1); do
+        SIZE=$(sudo lsblk -dno SIZE /dev/$md 2>/dev/null | xargs)
+        STATUS=$(awk "/^$md/ {print \$3}" /proc/mdstat)
+        MOUNT_POINT=$(sudo lsblk -no MOUNTPOINT /dev/$md 2>/dev/null | xargs)
+        USAGE=$(df -h "$MOUNT_POINT" 2>/dev/null | awk 'NR==2 {print $3 " (" $5 " belegt)"}')
+        RAID_CONTENT="${RAID_CONTENT}\n - ${md}: ${SIZE} | ${STATUS} | ${USAGE}"
+    done
+fi
+
+generate_disk_bars() {
+    df -h | grep '^/dev/' | while read -r line; do
+        MOUNT=$(echo "$line" | awk '{print $6}'); [[ "$MOUNT" == "/snap"* ]] && continue
+        SIZE=$(echo "$line" | awk '{print $2}'); USED=$(echo "$line" | awk '{print $3}'); PERC_STR=$(echo "$line" | awk '{print $5}')
+        PERC=${PERC_STR%\%}; [[ ! "$PERC" =~ ^[0-9]+$ ]] && PERC=0
+        BAR_WIDTH=25; FILLED=$(( (PERC * BAR_WIDTH) / 100 )); EMPTY=$(( BAR_WIDTH - FILLED ))
+        BAR_FILLED=$(printf "%${FILLED}s" | tr ' ' '#'); BAR_EMPTY=$(printf "%${EMPTY}s" | tr ' ' '.')
+        echo -e " ${WHITE}${MOUNT}${NC}"
+        printf "    [${WHITE}%s${WHITE}%s${WHITE}]${NC} %s (${LIGHT_RED}%s${NC} / ${WHITE}%s${NC})\n" "$BAR_FILLED" "$BAR_EMPTY" "$PERC_STR" "$USED" "$SIZE"
+    done
+}
+
+# --- Ausgabe ---
+echo ""
+echo -e "${CYAN}==============================================================================${NC}"
+echo -e " Willkommen auf ${BOLD}${PINK}$HOSTNAME${NC}"
+echo "------------------------------------------------------------------------------"
+printf " %-16s %s\n" "Hardware:" "$HW_MODEL"
+printf " %-16s %s\n" "CPU-Typ:" "$CPU_MODEL"
+printf " %-16s %s\n" "CPU-Kerne:" "$CPU_CORE_INFO"
+[ -n "$RPI_VOLT_STATUS" ] && printf " %-16s %b\n" "Power-Status:" "$RPI_VOLT_STATUS"
+[ -n "$RPI_CODECS" ] && printf " %-16s %b\n" "Codecs:" "$RPI_CODECS"
+printf " %-16s %-26s %-11s %s\n" "OS-Version:" "$DEBIAN_VER" "CPU-Takt:" "$CPU_FREQ"
+printf " %-16s %-26s %-11s %s\n" "Kernel:" "$KERNEL" "CPU-Temp:" "$CPU_TEMP"
+printf " %-16s %-26s %-11s %s\n" "Uptime:" "$UPTIME" "GPU-Temp:" "$GPU_TEMP"
+printf " %-16s %-26s %-11s %s\n" "IP-Adresse:" "$IP_ADDR" "RAM:" "$RAM_INFO"
+printf " %-16s %b\n" "Neustart nötig:" " $REBOOT_STATUS"
+
+if [ ${#SERVICES_FOUND[@]} -gt 0 ]; then
+    echo "------------------------------------------------------------------------------"
+    count=0; output=""; label="Dienste-Status:"
+    for service in "${SERVICES_FOUND[@]}"; do
+        output="${output}${service}, "
+        ((count++))
+        if [ $count -eq 4 ]; then
+            printf " %-16s %b\n" "$label" "${output%, }"
+            label=""; output=""; count=0
+        fi
+    done
+    [ $count -gt 0 ] && printf " %-16s %b\n" "$label" "${output%, }"
+fi
+
+echo "------------------------------------------------------------------------------"
+echo -e " RAID-Status:     ${YELLOW}${RAID_CONTENT}${NC}"
+echo "------------------------------------------------------------------------------"
+echo " Datenträger-Status (Physisch):"
+generate_disk_bars
+echo "------------------------------------------------------------------------------"
+echo " Aktive Benutzer: $USER_COUNT ($USER_LIST_DISPLAY)"
+echo -e " E-Mail Status:   $MAIL_STATUS_STRING"
+echo -e "${CYAN}==============================================================================${NC}"
+echo ""
+
+if [ -f /etc/update-motd.d/10-sysinfo ]; then
+    sudo rm /etc/update-motd.d/10-sysinfo 2>/dev/null
+fi
+
+sudo rm /usr/local/bin/sysinfo 2>/dev/null
+sudo ln -s /etc/update-motd.d/99-sysinfo /usr/local/bin/sysinfo 2>/dev/null
