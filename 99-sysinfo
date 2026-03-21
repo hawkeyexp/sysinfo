@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # --- Pfade für Auto-Update ---
-LOCAL_SCRIPT="/etc/update-motd.d/10-sysinfo"
-REMOTE_URL="https://raw.githubusercontent.com/hawkeyexp/sysinfo/main/10-sysinfo"
+LOCAL_SCRIPT="/etc/update-motd.d/99-sysinfo"
+REMOTE_URL="https://raw.githubusercontent.com/hawkeyexp/sysinfo/main/99-sysinfo"
 
-# --- Internet- & Update-Prüfung ---
+ --- Internet- & Update-Prüfung ---
 if command -v curl &> /dev/null; then
     if timeout 1 bash -c "true > /dev/tcp/8.8.8.8/53" 2>/dev/null; then
         REMOTE_CONTENT=$(curl -sL --connect-timeout 2 --max-time 5 "$REMOTE_URL")
@@ -190,10 +190,10 @@ printf " %-16s %s\n" "CPU-Typ:" "$CPU_MODEL"
 printf " %-16s %s\n" "CPU-Kerne:" "$CPU_CORE_INFO"
 [ -n "$RPI_VOLT_STATUS" ] && printf " %-16s %b\n" "Power-Status:" "$RPI_VOLT_STATUS"
 [ -n "$RPI_CODECS" ] && printf " %-16s %b\n" "Codecs:" "$RPI_CODECS"
-printf " %-16s %-20s %-11s %s\n" "OS-Version:" "$DEBIAN_VER" "CPU-Takt:" "$CPU_FREQ"
-printf " %-16s %-20s %-11s %s\n" "Kernel:" "$KERNEL" "CPU-Temp:" "$CPU_TEMP"
-printf " %-16s %-20s %-11s %s\n" "Uptime:" "$UPTIME" "GPU-Temp:" "$GPU_TEMP"
-printf " %-16s %-20s %-11s %s\n" "IP-Adresse:" "$IP_ADDR" "RAM:" "$RAM_INFO"
+printf " %-16s %-26s %-11s %s\n" "OS-Version:" "$DEBIAN_VER" "CPU-Takt:" "$CPU_FREQ"
+printf " %-16s %-26s %-11s %s\n" "Kernel:" "$KERNEL" "CPU-Temp:" "$CPU_TEMP"
+printf " %-16s %-26s %-11s %s\n" "Uptime:" "$UPTIME" "GPU-Temp:" "$GPU_TEMP"
+printf " %-16s %-26s %-11s %s\n" "IP-Adresse:" "$IP_ADDR" "RAM:" "$RAM_INFO"
 printf " %-16s %b\n" "Neustart nötig:" " $REBOOT_STATUS"
 
 if [ ${#SERVICES_FOUND[@]} -gt 0 ]; then
@@ -221,4 +221,9 @@ echo -e " E-Mail Status:   $MAIL_STATUS_STRING"
 echo -e "${CYAN}==============================================================================${NC}"
 echo ""
 
-[ ! -L /usr/local/bin/sysinfo ] && sudo ln -s /etc/update-motd.d/10-sysinfo /usr/local/bin/sysinfo 2>/dev/null
+if [ -f /etc/update-motd.d/10-sysinfo ]; then
+    sudo rm /etc/update-motd.d/10-sysinfo 2>/dev/null
+fi
+
+sudo rm /usr/local/bin/sysinfo 2>/dev/null
+sudo ln -s /etc/update-motd.d/99-sysinfo /usr/local/bin/sysinfo 2>/dev/null
